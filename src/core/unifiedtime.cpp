@@ -31,19 +31,6 @@ vector<Net::CAddress> SEED_NODES;
 /** Declarations for the DNS Seed Nodes. **/
 const char* DNS_SeedNodes[] = 
 {
-	"node1.nexusoft.io",
-	"node2.nexusoft.io",
-	"node3.nexusoft.io",
-	"node4.nexusoft.io",
-	"node5.nexusoft.io",
-	"node6.nexusoft.io",
-	"node7.nexusoft.io",
-	"node8.nexusoft.io",
-	"node9.nexusoft.io",
-	"node10.nexusoft.io",
-	"node11.nexusoft.io",
-	"node12.nexusoft.io",
-	"node13.nexusoft.io",
 	"node1.nexusearth.com",
 	"node2.nexusearth.com",
 	"node3.nexusearth.com",
@@ -56,7 +43,22 @@ const char* DNS_SeedNodes[] =
 	"node10.nexusearth.com",
 	"node11.nexusearth.com",
 	"node12.nexusearth.com",
-	"node13.nexusearth.com"
+	"node13.nexusearth.com",
+	"node1.mercuryminer.com",
+	"node2.mercuryminer.com",
+	"node3.mercuryminer.com",
+	"node4.mercuryminer.com",
+	"node5.mercuryminer.com",
+	"node6.mercuryminer.com",
+	"node7.mercuryminer.com",
+	"node8.mercuryminer.com",
+	"node9.mercuryminer.com",
+	"node10.mercuryminer.com",
+	"node11.mercuryminer.com",
+	"node12.mercuryminer.com",
+	"node13.mercuryminer.com",
+	"node1.nexusminingpool.com",
+	"node2.nexusminingpool.com"
 };
 
 /** Declarations for the DNS Seed Nodes. **/
@@ -69,8 +71,8 @@ const char* DNS_SeedNodes_Testnet[] =
 vector<string> SEEDS;
 
 /** Baseline Maximum Values for Unified Time. **/
-int MAX_UNIFIED_DRIFT   = 20;
-int MAX_UNIFIED_SAMPLES = 20;
+int MAX_UNIFIED_DRIFT   = 30;
+int MAX_UNIFIED_SAMPLES = 100;
 
 
 /** Gets the UNIX Timestamp from your Local Clock **/
@@ -85,11 +87,10 @@ int64 GetUnifiedTimestamp(){ return GetLocalTimestamp() + UNIFIED_AVERAGE_OFFSET
     This keeps time keeping separate from regular processing. **/
 void InitializeUnifiedTime()
 {
-	Wallet::CTimeDB init("cr"); ///init("cw")
-	fTimeUnified = init.ReadTimeData(UNIFIED_AVERAGE_OFFSET);
-    init.Close();
-	
 	printf("***** Unified Time Initialized to %i\n", UNIFIED_AVERAGE_OFFSET);
+	
+	CreateThread(ThreadTimeRegulator,  NULL);
+	CreateThread(ThreadUnifiedSamples, NULL);
 }
 
 
@@ -106,18 +107,38 @@ int GetUnifiedAverage()
 	return round(nAverage / (double) std::min(MAX_UNIFIED_SAMPLES, (int)UNIFIED_TIME_DATA.size()));
 }
 
+/* This method will make sure the clock isn't changed at any point. */
+void ThreadTimeRegulator(void* parg)
+{
+	while(!fShutdown)
+	{
+		/** Regulate the Clock while Waiting, and Break if the Clock Changes. **/
+		int64 nTimestamp = GetLocalTimestamp();
+		Sleep(10000);
+		
+		if(!fTimeUnified)
+			continue;
+					
+		int64 nElapsed = GetLocalTimestamp() - nTimestamp;
+		if(nElapsed > (MAX_UNIFIED_DRIFT + 10) || nElapsed < ((MAX_UNIFIED_DRIFT - 10) * -1))
+		{
+			UNIFIED_TIME_DATA.clear();
+			UNIFIED_AVERAGE_OFFSET -= nElapsed;
+						
+			printf("***** LLP Clock Regulator: Time Changed by %"PRId64" Seconds. New Offset %i\n", nElapsed, UNIFIED_AVERAGE_OFFSET);
+		}
+	}
+}
+
 
 /** Regulator of the Unified Clock **/
-void ThreadTimeRegulator(void* parg)
+void ThreadUnifiedSamples(void* parg)
 {
 	/** Compile the Seed Nodes into a set of Vectors. **/
 	SEED_NODES    = DNS_Lookup(fTestNet ? DNS_SeedNodes_Testnet : DNS_SeedNodes);
 	
 	/** Iterator to be used to ensure every time seed is giving an equal weight towards the Global Seeds. **/
-	int nIterator = 0;
-	
-	/** Compile all the Seeds into one Vector. **/
-	printf("Compiling List...\n");
+	int nIterator = -1;
 	
 	for(int nIndex = 0; nIndex < SEED_NODES.size(); nIndex++)
 		SEEDS.push_back(SEED_NODES[nIndex].ToStringIP());
@@ -178,7 +199,9 @@ void ThreadTimeRegulator(void* parg)
 						nSamples.Add(nOffset);
 						
 						SERVER.GetOffset((unsigned int)GetLocalTimestamp());
-						printf("***** Core LLP: Added Sample %i | Seed %s\n", nOffset, SERVER.IP.c_str());
+						
+						if(GetArg("-verbose", 0) >= 2)
+							printf("***** Core LLP: Added Sample %i | Seed %s\n", nOffset, SERVER.IP.c_str());
 					}
 					
 					SERVER.ResetPacket();
@@ -202,18 +225,34 @@ void ThreadTimeRegulator(void* parg)
 				continue;
 			}
 			
+			/* These checks are for after the first time seed has been established. 
+				TODO: Look at the possible attack vector of the first time seed being manipulated.
+						This could be easily done by allowing the time seed to be created by X nodes and then check the drift. */
+			if(fTimeUnified)
+			{
+			
+				/* Check that the samples don't violate time changes too drastically. */
+				if(nSamples.Majority() > GetUnifiedAverage() + MAX_UNIFIED_DRIFT ||
+					nSamples.Majority() < GetUnifiedAverage() - MAX_UNIFIED_DRIFT ) {
+				
+					printf("***** Core LLP: Unified Samples Out of Drift Scope Current (%u) Samples (%u)\n", GetUnifiedAverage(), nSamples.Majority());
+					SERVER.Close();
+				
+					continue;
+				}
+			}
 			
 			/** If the Moving Average is filled with samples, continue iterating to keep it moving. **/
 			if(UNIFIED_TIME_DATA.size() >= MAX_UNIFIED_SAMPLES)
 			{
 				if(UNIFIED_MOVING_ITERATOR >= MAX_UNIFIED_SAMPLES)
 					UNIFIED_MOVING_ITERATOR = 0;
-								
+									
 				UNIFIED_TIME_DATA[UNIFIED_MOVING_ITERATOR] = nSamples.Majority();
 				UNIFIED_MOVING_ITERATOR ++;
 			}
-			
-			
+				
+				
 			/** If The Moving Average is filling, move the iterator along with the Time Data Size. **/
 			else
 			{
@@ -228,34 +267,12 @@ void ThreadTimeRegulator(void* parg)
 				fTimeUnified = true;
 				UNIFIED_AVERAGE_OFFSET = GetUnifiedAverage();
 				
-				Wallet::CTimeDB DB("cw");
-				DB.WriteTimeData(UNIFIED_AVERAGE_OFFSET);
-				DB.Close();
-				
-				printf("***** %i Iterator | %i Offset | %i Current | %"PRId64"\n", UNIFIED_MOVING_ITERATOR, nSamples.Majority(), UNIFIED_AVERAGE_OFFSET, GetUnifiedTimestamp());
-				
-				
-				/** Regulate the Clock while Waiting, and Break if the Clock Changes. **/
-				unsigned int nSeconds = 0;
-				while(nSeconds < 600)
-				{
-					int64 nTimestamp = GetLocalTimestamp();
-					Sleep(1000);
-					
-					int64 nElapsed = GetLocalTimestamp() - nTimestamp;
-					if(nElapsed > (MAX_UNIFIED_DRIFT + 1) || nElapsed < ((MAX_UNIFIED_DRIFT - 1) * -1))
-					{
-						UNIFIED_TIME_DATA.clear();
-						UNIFIED_AVERAGE_OFFSET -= nElapsed;
-						
-						printf("***** LLP Clock Regulator: Time Changed by %"PRId64" Seconds. New Offset %i\n", nElapsed, UNIFIED_AVERAGE_OFFSET);
-						
-						break;
-					}
-					
-					nSeconds++;
-				}
+				if(GetArg("-verbose", 0) >= 1)
+					printf("***** %i Iterator | %i Offset | %i Current | %"PRId64"\n", UNIFIED_MOVING_ITERATOR, nSamples.Majority(), UNIFIED_AVERAGE_OFFSET, GetUnifiedTimestamp());
 			}
+			
+			/* Sleep for 5 Minutes Between Sample. */
+			Sleep(60000);
 		}
 		catch(std::exception& e){ printf("UTM ERROR: %s\n", e.what()); }
 	}
@@ -265,7 +282,7 @@ void ThreadTimeRegulator(void* parg)
 vector<Net::CAddress> DNS_Lookup(const char* DNS_Seed[])
 {
 	vector<Net::CAddress> vNodes;
-    for (unsigned int seed = 0; seed < (fTestNet ? 1 : 26); seed++)
+    for (unsigned int seed = 0; seed < (fTestNet ? 1 : 28); seed++)
 	{
 		printf("%u Host: %s\n", seed, DNS_Seed[seed]);
         vector<Net::CNetAddr> vaddr;
