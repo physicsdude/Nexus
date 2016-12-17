@@ -656,7 +656,7 @@ namespace Core
 	
 	
 	/** Key is Expired if it is Invalid or Time between Network Best Block and Best Previous is Greater than Expiration Time. **/
-	uint64 CTrustKey::Age(unsigned int nTime) const { return (uint64)std::min((uint64)(nTime - nGenesisTime), (uint64) 0); }
+	uint64 CTrustKey::Age(unsigned int nTime) const { return (uint64)std::max((uint64)(nTime - nGenesisTime), (uint64) 0); }
 	
 	
 	/** The Age of a Key in Block age as in the Time it has been since Trust Key has produced block. **/
@@ -667,6 +667,6 @@ namespace Core
 			return (uint64)(nTime - nGenesisTime);
 			
 		/** Block Age is Time to Previous Block's Time. **/
-		return (uint64)(nTime - mapBlockIndex[hashPrevBlocks.back()]->GetBlockTime());
+		return (uint64)std::max((uint64)0, (uint64)(nTime - mapBlockIndex[hashPrevBlocks.back()]->GetBlockTime()));
 	}
 }
